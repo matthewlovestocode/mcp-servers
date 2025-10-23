@@ -6,6 +6,8 @@ export interface PostMessageOptions {
   attachments?: unknown[];
   webhookName?: string;
   webhookUrl?: string;
+  username?: string;
+  iconEmoji?: string;
 }
 
 export interface SlackPostResult {
@@ -82,12 +84,14 @@ export class SlackWebhookClient {
       payload.attachments = options.attachments;
     }
 
-    if (this.config.username) {
-      payload.username = this.config.username;
+    const username = options.username?.trim() || this.config.username;
+    if (username) {
+      payload.username = username;
     }
 
-    if (this.config.iconEmoji) {
-      payload.icon_emoji = this.config.iconEmoji;
+    const iconEmoji = options.iconEmoji?.trim() || this.config.iconEmoji;
+    if (iconEmoji) {
+      payload.icon_emoji = iconEmoji;
     }
 
     return payload;

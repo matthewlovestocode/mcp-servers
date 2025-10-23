@@ -48,8 +48,21 @@ TypeScript implementation of an MCP server that posts messages to Slack via inco
 
 ## Available Tools
 
-- `post-message` – Send a free-form message or block payload to Slack.
+- `post-message` – Create a rich Block Kit announcement with a headline, optional body, bullet highlights, side-by-side facts, footer context, and a call-to-action button. The plain-text fallback is `[icon] [username]:` followed by the headline and key details.
 - `post-pr` – Share pull request details (state, reviewers, labels, stats, link).
+
+Both tools accept optional `username` and `iconEmoji` arguments to override the sender for individual messages.
+
+### `post-message` arguments
+
+- `headline` *(required)* – Main title rendered via header block.
+- `body` – Markdown section beneath the headline.
+- `highlights` – Array of bullet strings rendered as a list.
+- `fields` – Array of `{label, value}` pairs shown as a facts table.
+- `cta` – `{text, url}` turns into a button.
+- `footer` – Additional context placed in the footer alongside username/icon.
+- `attachments` – Optional raw Slack attachments array passed through.
+- `username` / `iconEmoji` – Override sender metadata per message.
 
 ## Environment Variables
 
