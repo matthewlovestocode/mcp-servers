@@ -68,6 +68,10 @@ TypeScript implementation of a Model Context Protocol (MCP) server that exposes 
 
 - `github://rate-limit` – Returns the remaining rate limit for the authenticated token.
 
+## Changelog
+
+All user-visible changes are tracked in [`CHANGELOG.md`](./CHANGELOG.md). Whenever you modify this server, add a concise entry so the agent can keep release notes in sync.
+
 ## Linting
 
 Run ESLint over the TypeScript sources:

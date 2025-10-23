@@ -64,6 +64,10 @@ Both tools accept optional `username` and `iconEmoji` arguments to override the 
 - `attachments` – Optional raw Slack attachments array passed through.
 - `username` / `iconEmoji` – Override sender metadata per message.
 
+## Changelog
+
+All user-visible changes are tracked in [`CHANGELOG.md`](./CHANGELOG.md). When you adjust tooling or behaviors, append a summary to keep the changelog aligned with the code.
+
 ## Environment Variables
 
 - `SLACK_WEBHOOK_URL` – Default webhook URL for Slack.
