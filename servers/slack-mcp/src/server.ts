@@ -414,15 +414,3 @@ function toolText(text: string): CallToolResult {
     ]
   };
 }
-
-function toolError(text: string): CallToolResult {
-  return {
-    content: [
-      {
-        type: "text",
-        text
-      }
-    ],
-    isError: true
-  };
-}
