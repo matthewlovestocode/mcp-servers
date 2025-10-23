@@ -5,18 +5,49 @@ import { z } from "zod";
 import type { SlackServerConfig } from "./config.js";
 import { SlackWebhookClient } from "./slackClient.js";
 
-const slackBlocksSchema = z.array(z.record(z.string(), z.any()));
 const slackAttachmentsSchema = z.array(z.record(z.string(), z.any()));
 
 const postMessageArgs = z
   .object({
-    text: z.string().min(1).optional(),
-    blocks: slackBlocksSchema.optional(),
+    headline: z
+      .string()
+      .min(1)
+      .describe("Primary headline displayed in the message header."),
+    body: z
+      .string()
+      .optional()
+      .describe("Main message body rendered as Markdown."),
+    highlights: z
+      .array(z.string().min(1))
+      .default([])
+      .describe("Bullet highlights to emphasize key points."),
+    fields: z
+      .array(
+        z.object({
+          label: z.string().min(1),
+          value: z.string().min(1)
+        })
+      )
+      .default([])
+      .describe("Key/value pairs rendered as a side-by-side facts table."),
+    footer: z
+      .string()
+      .optional()
+      .describe("Additional context rendered in the footer."),
+    cta: z
+      .object({
+        text: z.string().min(1),
+        url: z.string().url()
+      })
+      .optional()
+      .describe("Optional call-to-action button."),
     attachments: slackAttachmentsSchema.optional(),
     webhookName: z.string().optional(),
-    webhookUrl: z.string().url().optional()
+    webhookUrl: z.string().url().optional(),
+    username: z.string().min(1).optional(),
+    iconEmoji: z.string().min(1).optional()
   })
-  .describe("Post a message to Slack using the configured webhook.");
+  .describe("Post a rich, Block Kit driven message to Slack.");
 
 const postPullRequestArgs = z
   .object({
@@ -34,7 +65,9 @@ const postPullRequestArgs = z
     comments: z.number().int().nonnegative().optional(),
     body: z.string().optional(),
     webhookName: z.string().optional(),
-    webhookUrl: z.string().url().optional()
+    webhookUrl: z.string().url().optional(),
+    username: z.string().min(1).optional(),
+    iconEmoji: z.string().min(1).optional()
   })
   .describe("Post a pull request summary to Slack.");
 
@@ -57,8 +90,9 @@ export function createSlackServer(config: SlackServerConfig): McpServer {
         "- SLACK_ICON_EMOJI (optional) emoji avatar for messages.",
         "",
         "Available tools:",
-        "- post-message: send a general-purpose message or block payload.",
-        "- post-pr: share pull request summaries with key metadata."
+        "- post-message: craft rich announcements with headline, highlights, fields, and CTA.",
+        "- post-pr: share pull request summaries with key metadata.",
+        "Optional arguments: username/iconEmoji override sender details per message."
       ].join("\n")
     }
   );
@@ -66,23 +100,32 @@ export function createSlackServer(config: SlackServerConfig): McpServer {
   const client = new SlackWebhookClient(config);
   server.tool(
     "post-message",
-    "Send a message or block payload to Slack.",
+    "Send a rich Slack message with headline, highlights, fields, and CTA.",
     postMessageArgs.shape,
     async (rawArgs: unknown) => {
       const args = postMessageArgs.parse(rawArgs);
 
-      if (!args.text && !args.blocks && !args.attachments) {
-        return toolError(
-          "Provide at least one of text, blocks, or attachments for Slack message."
-        );
-      }
+      const effectiveUsername = args.username ?? config.username;
+      const effectiveIcon = args.iconEmoji ?? config.iconEmoji;
+
+      const blocks = buildRichBlocks({
+        args,
+        username: effectiveUsername,
+        iconEmoji: effectiveIcon
+      });
 
       await client.postMessage({
-        text: args.text,
-        blocks: args.blocks,
+        text: buildFallbackText({
+          args,
+          username: effectiveUsername,
+          iconEmoji: effectiveIcon
+        }),
+        blocks,
         attachments: args.attachments,
         webhookName: args.webhookName,
-        webhookUrl: args.webhookUrl
+        webhookUrl: args.webhookUrl,
+        username: args.username,
+        iconEmoji: args.iconEmoji
       });
 
       return toolText("Message posted to Slack.");
@@ -102,7 +145,9 @@ export function createSlackServer(config: SlackServerConfig): McpServer {
         text: pullRequestText(args),
         blocks,
         webhookName: args.webhookName,
-        webhookUrl: args.webhookUrl
+        webhookUrl: args.webhookUrl,
+        username: args.username,
+        iconEmoji: args.iconEmoji
       });
 
       return toolText(
@@ -188,6 +233,145 @@ function pullRequestText(args: PullRequestInput): string {
   ].filter(Boolean);
 
   return parts.join("\n");
+}
+
+function buildRichBlocks(options: {
+  args: z.infer<typeof postMessageArgs>;
+  username?: string;
+  iconEmoji?: string;
+}): unknown[] {
+  const { args, username, iconEmoji } = options;
+  const blocks: unknown[] = [
+    {
+      type: "header",
+      text: {
+        type: "plain_text",
+        text: truncatePlainText(args.headline, 150),
+        emoji: true
+      }
+    }
+  ];
+
+  if (args.body) {
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: args.body
+      }
+    });
+  }
+
+  if (args.highlights.length > 0) {
+    const highlightList = args.highlights.map((item) => `• ${item}`).join("\n");
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: highlightList
+      }
+    });
+  }
+
+  if (args.fields.length > 0) {
+    blocks.push({
+      type: "section",
+      fields: args.fields.map((field) => ({
+        type: "mrkdwn",
+        text: `*${field.label}*\n${field.value}`
+      }))
+    });
+  }
+
+  if (args.cta) {
+    blocks.push({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: truncatePlainText(args.cta.text, 75),
+            emoji: true
+          },
+          url: args.cta.url
+        }
+      ]
+    });
+  }
+
+  const contextElements: { type: string; text: string }[] = [];
+  if (iconEmoji) {
+    contextElements.push({
+      type: "mrkdwn",
+      text: iconEmoji
+    });
+  }
+  if (username) {
+    contextElements.push({
+      type: "mrkdwn",
+      text: `*${username}*`
+    });
+  }
+  if (args.footer) {
+    contextElements.push({
+      type: "mrkdwn",
+      text: args.footer
+    });
+  }
+
+  if (contextElements.length > 0) {
+    blocks.push({
+      type: "context",
+      elements: contextElements
+    });
+  }
+
+  return blocks;
+}
+
+function buildFallbackText(options: {
+  args: z.infer<typeof postMessageArgs>;
+  username?: string;
+  iconEmoji?: string;
+}): string {
+  const { args, username, iconEmoji } = options;
+  const parts: string[] = [];
+
+  if (iconEmoji) {
+    parts.push(`[${iconEmoji}]`);
+  }
+  if (username) {
+    parts.push(`[${username}]`);
+  }
+
+  parts.push(args.headline);
+
+  if (args.body) {
+    parts.push(args.body);
+  }
+
+  args.highlights.forEach((item) => {
+    parts.push(`• ${item}`);
+  });
+
+  args.fields.forEach((field) => {
+    parts.push(`${field.label}: ${field.value}`);
+  });
+
+  if (args.cta) {
+    parts.push(`${args.cta.text} -> ${args.cta.url}`);
+  }
+
+  if (args.footer) {
+    parts.push(args.footer);
+  }
+
+  return parts.join(" \u2014 ");
+}
+
+function truncatePlainText(text: string, maxLength: number): string {
+  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}\u2026`;
 }
 
 function prStatusEmoji(state: PullRequestInput["state"], draft: boolean): string {
