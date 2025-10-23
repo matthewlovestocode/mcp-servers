@@ -1,0 +1,46 @@
+{
+  "name": "@servers/gh-mcp",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server exposing GitHub tooling and resources.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "gh-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf dist tsconfig.tsbuildinfo",
+    "dev": "tsx watch src/index.ts",
+    "lint": "eslint \"src/**/*.ts\"",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "github",
+    "server",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.1",
+    "dotenv": "^16.4.5",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@tsconfig/node20": "^20.1.2",
+    "@types/node": "^20.12.7",
+    "@eslint/js": "^8.57.1",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-import": "^2.29.1",
+    "eslint-import-resolver-typescript": "3.6.1",
+    "typescript-eslint": "^7.13.1",
+    "rimraf": "^5.0.5",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
