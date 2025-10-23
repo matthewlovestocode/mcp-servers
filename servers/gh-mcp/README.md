@@ -5,8 +5,9 @@ TypeScript implementation of a Model Context Protocol (MCP) server that exposes 
 ## Features
 
 - Lists repositories for a user, organization, or the authenticated account.
-- Retrieves detailed metadata for a specific issue or pull request.
-- Performs GitHub issue searches using the REST API.
+- Manages local git workflow (create branches, stage changes, commit, cleanup).
+- Manages branches on GitHub (create new branches, update, delete).
+- Checks combined commit statuses for refs.
 - Creates pull requests, submits approval reviews, and merges pull requests (merge, squash, rebase).
 - Provides a resource for monitoring rate limit usage.
 
@@ -50,8 +51,15 @@ TypeScript implementation of a Model Context Protocol (MCP) server that exposes 
 ## Available Tools
 
 - `list-repositories` – Lists repositories for the provided owner (user or org) or falls back to the authenticated account/default owner.
-- `get-issue` – Fetches metadata for a GitHub issue or pull request.
-- `search-issues` – Executes an issue/PR search using GitHub's search syntax.
+- `create-local-branch` – Creates a new branch in a local git repository.
+- `git-status` – Shows the working tree status for a local repository.
+- `stage-changes` – Stages files or directories for the next local commit.
+- `create-commit` – Creates a commit in the local repository with the supplied message.
+- `delete-local-branch` – Deletes a local branch (main is protected).
+- `create-branch` – Creates a new branch pointing to a specific commit SHA on GitHub.
+- `update-branch` – Moves an existing branch to a different commit, optionally forcing the update.
+- `delete-remote-branch` – Deletes a remote branch in GitHub (main is protected).
+- `get-commit-status` – Fetches the combined status for a commit SHA or branch.
 - `create-pull-request` – Opens a new pull request targeting a repository/branch.
 - `approve-pull-request` – Submits an approval review for a pull request.
 - `merge-pull-request` – Merges a pull request using merge, squash, or rebase strategies.

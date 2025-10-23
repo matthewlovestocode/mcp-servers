@@ -117,6 +117,63 @@ export interface MergeResult {
   };
 }
 
+export interface GitReference {
+  ref: string;
+  node_id?: string;
+  url: string;
+  object: {
+    sha: string;
+    type: string;
+    url: string;
+  };
+}
+
+export interface CommitStatusCheck {
+  id: number;
+  state: string;
+  description: string | null;
+  context: string;
+  target_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CombinedCommitStatus {
+  state: string;
+  sha: string;
+  total_count: number;
+  statuses: CommitStatusCheck[];
+  commit_url: string;
+  url: string;
+}
+
+export interface CreateBranchParams {
+  owner: string;
+  repo: string;
+  branch: string;
+  sha: string;
+}
+
+export interface UpdateBranchParams {
+  owner: string;
+  repo: string;
+  branch: string;
+  sha: string;
+  force?: boolean;
+}
+
+export interface DeleteBranchParams {
+  owner: string;
+  repo: string;
+  branch: string;
+}
+
+export interface GetCommitStatusParams {
+  owner: string;
+  repo: string;
+  ref: string;
+}
+
 export interface RateLimitInfo {
   core: {
     limit: number;
@@ -275,6 +332,66 @@ export class GitHubClient {
           sha: body.expectedHeadSha
         }
       }
+    );
+  }
+
+  async createBranch(params: CreateBranchParams): Promise<GitReference> {
+    const { owner, repo, branch, sha } = params;
+    const ref = branch.startsWith("refs/")
+      ? branch
+      : `refs/heads/${branch}`;
+
+    return this.request<GitReference>(`/repos/${owner}/${repo}/git/refs`, {
+      method: "POST",
+      body: {
+        ref,
+        sha
+      }
+    });
+  }
+
+  async updateBranch(params: UpdateBranchParams): Promise<GitReference> {
+    const { owner, repo, sha, force = false } = params;
+    const normalizedBranch = params.branch.replace(/^refs\/heads\//, "");
+    const branchPath = normalizedBranch
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/");
+
+    return this.request<GitReference>(
+      `/repos/${owner}/${repo}/git/refs/heads/${branchPath}`,
+      {
+        method: "PATCH",
+        body: {
+          sha,
+          force
+        }
+      }
+    );
+  }
+
+  async deleteBranch(params: DeleteBranchParams): Promise<void> {
+    const { owner, repo } = params;
+    const normalized = params.branch.replace(/^refs\/heads\//, "");
+    const branchPath = normalized
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/");
+
+    await this.request<void>(
+      `/repos/${owner}/${repo}/git/refs/heads/${branchPath}`,
+      {
+        method: "DELETE"
+      }
+    );
+  }
+
+  async getCommitStatus(
+    params: GetCommitStatusParams
+  ): Promise<CombinedCommitStatus> {
+    const { owner, repo, ref } = params;
+    return this.request<CombinedCommitStatus>(
+      `/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}/status`
     );
   }
 

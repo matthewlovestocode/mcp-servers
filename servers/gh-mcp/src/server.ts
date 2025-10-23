@@ -5,12 +5,21 @@ import { z } from "zod";
 import type { GitHubServerConfig } from "./config.js";
 import {
   GitHubClient,
-  IssueSummary,
+  GitReference,
+  CombinedCommitStatus,
   MergeResult,
   PullRequestReview,
   PullRequestSummary,
   RepositorySummary
 } from "./githubClient.js";
+import {
+  createLocalBranch,
+  createCommit as createLocalCommit,
+  deleteLocalBranch,
+  GitLocalError,
+  getStatus as getLocalStatus,
+  stageChanges
+} from "./gitLocal.js";
 
 export function createGitHubServer(config: GitHubServerConfig): McpServer {
   const server = new McpServer(
@@ -29,8 +38,15 @@ export function createGitHubServer(config: GitHubServerConfig): McpServer {
         "",
         "Available tools:",
         "- list-repositories: list repositories for the configured owner or authenticated user.",
-        "- get-issue: fetch a specific issue with metadata.",
-        "- search-issues: run an issues or PR search using GitHub's search syntax.",
+        "- create-local-branch: create a local git branch at the provided path.",
+        "- git-status: show the current working tree status for a local repository.",
+        "- stage-changes: add files or folders to the next local commit.",
+        "- create-commit: create a local commit with a message (optionally empty/signoff).",
+        "- get-commit-status: fetch the combined CI status for a commit SHA or ref.",
+        "- delete-local-branch: delete a local branch (excluding main).",
+        "- delete-remote-branch: delete a remote branch on GitHub (excluding main).",
+        "- create-branch: create a new branch pointing at a commit SHA.",
+        "- update-branch: move an existing branch to a different commit.",
         "- create-pull-request: open a new pull request against the target repository.",
         "- approve-pull-request: approve an open pull request.",
         "- merge-pull-request: merge a pull request using merge, squash, or rebase."
@@ -102,27 +118,207 @@ export function createGitHubServer(config: GitHubServerConfig): McpServer {
     }
   );
 
-  const getIssueArgs = z
+  const localRepositoryArgs = z.object({
+    repoPath: z
+      .string()
+      .min(1)
+      .describe("Path to the local git repository (relative or absolute).")
+  });
+
+  const createLocalBranchArgs = localRepositoryArgs
+    .extend({
+      branch: z
+        .string()
+        .min(1)
+        .describe("Name of the local branch to create."),
+      startPoint: z
+        .string()
+        .optional()
+        .describe("Optional starting point (commit or branch) for the new branch.")
+    })
+    .describe("Create a new local git branch at the specified repository path.");
+
+  server.tool(
+    "create-local-branch",
+    "Create a new local git branch in the given repository path.",
+    createLocalBranchArgs.shape,
+    async (rawArgs: unknown) => {
+      const args = createLocalBranchArgs.parse(rawArgs);
+
+      try {
+        await createLocalBranch({
+          repoPath: args.repoPath,
+          branch: args.branch,
+          startPoint: args.startPoint
+        });
+
+        return toolText(
+          `Created local branch '${args.branch}' in ${args.repoPath}.`
+        );
+      } catch (error) {
+        return handleGitError(error);
+      }
+    }
+  );
+
+  const gitStatusArgs = localRepositoryArgs
+    .describe("Show the working tree status for a local repository.");
+
+  server.tool(
+    "git-status",
+    "Show git status (short) for a local repository.",
+    gitStatusArgs.shape,
+    async (rawArgs: unknown) => {
+      const args = gitStatusArgs.parse(rawArgs);
+
+      try {
+        const result = await getLocalStatus({ repoPath: args.repoPath });
+        const output = result.stdout || "Working tree clean.";
+        return toolText(output);
+      } catch (error) {
+        return handleGitError(error);
+      }
+    }
+  );
+
+  const stageChangesArgs = localRepositoryArgs
+    .extend({
+      paths: z
+        .array(z.string().min(1))
+        .optional()
+        .describe("Paths to stage. Defaults to all changes when omitted.")
+    })
+    .describe("Stage files or directories for the next commit.");
+
+  server.tool(
+    "stage-changes",
+    "Stage files or directories for the next local commit.",
+    stageChangesArgs.shape,
+    async (rawArgs: unknown) => {
+      const args = stageChangesArgs.parse(rawArgs);
+
+      try {
+        await stageChanges({
+          repoPath: args.repoPath,
+          paths: args.paths
+        });
+
+        const descriptor = args.paths?.length
+          ? args.paths.join(", ")
+          : "all changes";
+        return toolText(`Staged ${descriptor} in ${args.repoPath}.`);
+      } catch (error) {
+        return handleGitError(error);
+      }
+    }
+  );
+
+  const createCommitArgs = localRepositoryArgs
+    .extend({
+      message: z
+        .string()
+        .min(1)
+        .describe("Commit message."),
+      allowEmpty: z
+        .boolean()
+        .default(false)
+        .describe("Allow creating an empty commit."),
+      signoff: z
+        .boolean()
+        .default(false)
+        .describe("Add a Signed-off-by trailer to the commit message.")
+    })
+    .describe("Create a commit in the local repository.");
+
+  server.tool(
+    "create-commit",
+    "Create a local commit with the provided message.",
+    createCommitArgs.shape,
+    async (rawArgs: unknown) => {
+      const args = createCommitArgs.parse(rawArgs);
+
+      try {
+        const result = await createLocalCommit({
+          repoPath: args.repoPath,
+          message: args.message,
+          allowEmpty: args.allowEmpty,
+          signoff: args.signoff
+        });
+
+        const output = result.stdout || "Created commit.";
+        return toolText(output);
+      } catch (error) {
+        return handleGitError(error);
+      }
+    }
+  );
+
+  const deleteLocalBranchArgs = localRepositoryArgs
+    .extend({
+      branch: z
+        .string()
+        .min(1)
+        .describe("Local branch name to delete (main is protected)."),
+      force: z
+        .boolean()
+        .default(false)
+        .describe("Force delete the branch, ignoring unmerged commits.")
+    })
+    .describe("Delete a local branch (excluding main).");
+
+  server.tool(
+    "delete-local-branch",
+    "Delete a local branch (excluding main).",
+    deleteLocalBranchArgs.shape,
+    async (rawArgs: unknown) => {
+      const args = deleteLocalBranchArgs.parse(rawArgs);
+
+      if (args.branch.trim() === "main") {
+        return toolError("Refusing to delete the local main branch.");
+      }
+
+      try {
+        await deleteLocalBranch({
+          repoPath: args.repoPath,
+          branch: args.branch,
+          force: args.force
+        });
+
+        return toolText(
+          `Deleted local branch '${args.branch}' from ${args.repoPath}.`
+        );
+      } catch (error) {
+        return handleGitError(error);
+      }
+    }
+  );
+
+  const createBranchArgs = z
     .object({
       owner: z
         .string()
         .optional()
         .describe("Repository owner. Falls back to GITHUB_DEFAULT_OWNER."),
       repo: z.string().describe("Repository name."),
-      issueNumber: z
-        .number()
-        .int()
-        .positive()
-        .describe("Issue or pull request number.")
+      branch: z
+        .string()
+        .min(1)
+        .describe(
+          "Branch name to create. You may include the full ref (e.g. `refs/heads/feature`)."
+        ),
+      sha: z
+        .string()
+        .min(1)
+        .describe("Commit SHA that the new branch should point to.")
     })
-    .describe("Retrieve a single issue or pull request.");
+    .describe("Create a new Git branch at the provided commit SHA.");
 
   server.tool(
-    "get-issue",
-    "Fetch metadata for a specific GitHub issue or pull request.",
-    getIssueArgs.shape,
+    "create-branch",
+    "Create a new branch pointing at a commit.",
+    createBranchArgs.shape,
     async (rawArgs: unknown) => {
-      const args = getIssueArgs.parse(rawArgs);
+      const args = createBranchArgs.parse(rawArgs);
       const owner = args.owner ?? config.defaultOwner;
 
       if (!owner) {
@@ -131,58 +327,152 @@ export function createGitHubServer(config: GitHubServerConfig): McpServer {
         );
       }
 
-      const issue = await client.getIssue({
+      const ref = await client.createBranch({
         owner,
         repo: args.repo,
-        issueNumber: args.issueNumber
+        branch: args.branch,
+        sha: args.sha
       });
 
-      return toolText(formatIssue(issue));
+      return toolText(`Created branch:\n\n${formatGitReference(ref)}`);
     }
   );
 
-  const searchIssuesArgs = z
+  const updateBranchArgs = z
     .object({
-      query: z
+      owner: z
+        .string()
+        .optional()
+        .describe("Repository owner. Falls back to GITHUB_DEFAULT_OWNER."),
+      repo: z.string().describe("Repository name."),
+      branch: z
         .string()
         .min(1)
         .describe(
-          "GitHub search query. Examples: `repo:owner/name is:open is:pr label:bug`."
+          "Branch name to update. Prefix `refs/heads/` is optional."
         ),
-      perPage: z
-        .number()
-        .int()
+      sha: z
+        .string()
         .min(1)
-        .max(100)
-        .default(10)
-        .describe("Maximum number of items to return (max 100).")
+        .describe("Commit SHA the branch should point to."),
+      force: z
+        .boolean()
+        .default(false)
+        .describe(
+          "When true, allow moving the branch backward (force update)."
+        )
     })
-    .describe("Search issues or pull requests using GitHub's search syntax.");
+    .describe("Update an existing branch to point at a new commit SHA.");
 
   server.tool(
-    "search-issues",
-    "Run a GitHub issues or pull request search.",
-    searchIssuesArgs.shape,
+    "update-branch",
+    "Move an existing branch to another commit.",
+    updateBranchArgs.shape,
     async (rawArgs: unknown) => {
-      const args = searchIssuesArgs.parse(rawArgs);
-      const result = await client.searchIssues({
-        query: args.query,
-        perPage: args.perPage
-      });
+      const args = updateBranchArgs.parse(rawArgs);
+      const owner = args.owner ?? config.defaultOwner;
 
-      if (result.items.length === 0) {
-        return toolText(
-          `No issues matched the query. Total matches reported by GitHub: ${result.totalCount}.`
+      if (!owner) {
+        return toolError(
+          "Provide an `owner` argument or set GITHUB_DEFAULT_OWNER."
         );
       }
 
-      const formattedIssues = result.items
-        .map((issue) => formatIssue(issue))
-        .join("\n\n---\n\n");
+      const ref = await client.updateBranch({
+        owner,
+        repo: args.repo,
+        branch: args.branch,
+        sha: args.sha,
+        force: args.force
+      });
 
-      const summary = `GitHub returned ${result.totalCount} matching issues. Showing up to ${result.items.length}.`;
+      return toolText(`Updated branch:\n\n${formatGitReference(ref)}`);
+    }
+  );
 
-      return toolText(`${summary}\n\n${formattedIssues}`);
+  const getCommitStatusArgs = z
+    .object({
+      owner: z
+        .string()
+        .optional()
+        .describe("Repository owner. Falls back to GITHUB_DEFAULT_OWNER."),
+      repo: z.string().describe("Repository name."),
+      ref: z
+        .string()
+        .min(1)
+        .describe("Commit SHA or branch name to check.")
+    })
+    .describe("Fetch the combined status for a commit SHA or ref.");
+
+  server.tool(
+    "get-commit-status",
+    "Fetch the combined status for the provided commit SHA or ref.",
+    getCommitStatusArgs.shape,
+    async (rawArgs: unknown) => {
+      const args = getCommitStatusArgs.parse(rawArgs);
+      const owner = args.owner ?? config.defaultOwner;
+
+      if (!owner) {
+        return toolError(
+          "Provide an `owner` argument or set GITHUB_DEFAULT_OWNER."
+        );
+      }
+
+      const status = await client.getCommitStatus({
+        owner,
+        repo: args.repo,
+        ref: args.ref
+      });
+
+      return toolText(formatCommitStatus(status));
+    }
+  );
+
+  const deleteRemoteBranchArgs = z
+    .object({
+      owner: z
+        .string()
+        .optional()
+        .describe("Repository owner. Falls back to GITHUB_DEFAULT_OWNER."),
+      repo: z.string().describe("Repository name."),
+      branch: z
+        .string()
+        .min(1)
+        .describe(
+          "Branch name (with or without `refs/heads/`) to delete on GitHub."
+        )
+    })
+    .describe("Delete a remote branch from the GitHub repository (excluding main).");
+
+  server.tool(
+    "delete-remote-branch",
+    "Delete a remote branch on GitHub (excluding main).",
+    deleteRemoteBranchArgs.shape,
+    async (rawArgs: unknown) => {
+      const args = deleteRemoteBranchArgs.parse(rawArgs);
+      const owner = args.owner ?? config.defaultOwner;
+
+      if (!owner) {
+        return toolError(
+          "Provide an `owner` argument or set GITHUB_DEFAULT_OWNER."
+        );
+      }
+
+      const normalized = args.branch.replace(/^refs\/heads\//, "");
+
+      if (normalized === "main") {
+        return toolError("Refusing to delete the remote main branch.");
+      }
+
+      await client.deleteBranch({
+        owner,
+        repo: args.repo,
+        branch: normalized
+      });
+
+      return toolText(
+        `Deleted remote branch '${normalized}' from ${owner}/${args.repo}.`
+      );
     }
   );
 
@@ -208,6 +498,16 @@ export function createGitHubServer(config: GitHubServerConfig): McpServer {
         .string()
         .optional()
         .describe("Optional markdown body/description for the pull request."),
+      summary: z
+        .string()
+        .optional()
+        .describe("Optional summary content. Used to build the PR body when `body` is omitted."),
+      mermaid: z
+        .string()
+        .optional()
+        .describe(
+          "Optional mermaid diagram definition. Included in the body when provided and `body` is omitted."
+        ),
       draft: z
         .boolean()
         .default(false)
@@ -239,7 +539,7 @@ export function createGitHubServer(config: GitHubServerConfig): McpServer {
         title: args.title,
         head: args.head,
         base: args.base,
-        body: args.body,
+        body: composePullRequestBody(args),
         draft: args.draft,
         maintainerCanModify: args.maintainerCanModify
       });
@@ -420,6 +720,19 @@ function toolError(message: string): CallToolResult {
   };
 }
 
+function handleGitError(error: unknown): CallToolResult {
+  if (error instanceof GitLocalError) {
+    const details = error.details ? `\n${error.details}` : "";
+    return toolError(`${error.message}${details}`);
+  }
+
+  if (error instanceof Error) {
+    return toolError(error.message);
+  }
+
+  return toolError(String(error));
+}
+
 function formatRepository(repo: RepositorySummary): string {
   const visibility = repo.visibility ?? (repo.private ? "private" : "public");
   const updated = repo.pushed_at
@@ -439,28 +752,70 @@ function formatRepository(repo: RepositorySummary): string {
     .join("\n");
 }
 
-function formatIssue(issue: IssueSummary): string {
-  const lines = [
-    `${issue.html_url}`,
-    `${issue.title} (#${issue.number})`,
-    `State: ${issue.state}, Comments: ${issue.comments}`,
-    `Author: ${issue.user.login}`,
-    issue.assignees.length
-      ? `Assignees: ${issue.assignees.map((a) => a.login).join(", ")}`
-      : undefined,
-    issue.labels.length
-      ? `Labels: ${issue.labels
-          .map((label) => label.name)
-          .filter(Boolean)
-          .join(", ")}`
-      : undefined,
-    `Created: ${new Date(issue.created_at).toISOString()}`,
-    `Updated: ${new Date(issue.updated_at).toISOString()}`,
-    issue.closed_at ? `Closed: ${new Date(issue.closed_at).toISOString()}` : "",
-    issue.body ? `\n${issue.body}` : undefined
+function formatCommitStatus(status: CombinedCommitStatus): string {
+  const sections: string[] = [
+    `State: ${status.state}`,
+    `Commit: ${status.sha}`,
+    `Checks: ${status.total_count}`,
+    `Commit URL: ${status.commit_url}`
   ];
 
-  return lines.filter(Boolean).join("\n");
+  if (status.statuses.length === 0) {
+    sections.push("No individual status checks reported.");
+  } else {
+    const formattedStatuses = status.statuses
+      .map((check) => {
+        const lines = [
+          `Context: ${check.context}`,
+          `State: ${check.state}`,
+          check.description ? `Description: ${check.description}` : undefined,
+          check.target_url ? `Target: ${check.target_url}` : undefined,
+          `Updated: ${new Date(check.updated_at).toISOString()}`
+        ];
+
+        return lines.filter(Boolean).join("\n");
+      })
+      .join("\n\n");
+
+    sections.push("Statuses:");
+    sections.push(formattedStatuses);
+  }
+
+  return sections.join("\n\n");
+}
+
+function composePullRequestBody(args: {
+  body?: string;
+  summary?: string;
+  mermaid?: string;
+}): string | undefined {
+  if (args.body && args.body.trim()) {
+    return args.body;
+  }
+
+  const sections: string[] = [];
+
+  if (args.summary && args.summary.trim()) {
+    sections.push(`## Summary\n\n${args.summary.trim()}`);
+  }
+
+  if (args.mermaid && args.mermaid.trim()) {
+    sections.push(
+      [
+        "## Diagram",
+        "",
+        "```mermaid",
+        args.mermaid.trim(),
+        "```"
+      ].join("\n")
+    );
+  }
+
+  if (sections.length === 0) {
+    return undefined;
+  }
+
+  return sections.join("\n\n");
 }
 
 function formatPullRequest(pr: PullRequestSummary): string {
@@ -507,4 +862,13 @@ function formatMergeResult(result: MergeResult): string {
 
 function formatReset(resetEpochSeconds: number): string {
   return new Date(resetEpochSeconds * 1000).toISOString();
+}
+
+function formatGitReference(ref: GitReference): string {
+  return [
+    `Ref: ${ref.ref}`,
+    `Object SHA: ${ref.object.sha}`,
+    `Object type: ${ref.object.type}`,
+    `URL: ${ref.url}`
+  ].join("\n");
 }
